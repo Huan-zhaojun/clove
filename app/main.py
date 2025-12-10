@@ -66,19 +66,20 @@ app.add_middleware(
 # Include routers
 app.include_router(api_router)
 
-# Static files
-register_static_routes(app)
 
-# Exception handlers
-app.add_exception_handler(AppError, app_exception_handler)
-
-
-# Health check
+# 健康检查（必须在 SPA 路由之前注册，避免被通配路由拦截）
 @app.get("/health")
 async def health():
     """Health check endpoint."""
     stats = await account_manager.get_status()
     return {"status": "healthy" if stats["valid_accounts"] > 0 else "degraded"}
+
+
+# Static files (SPA fallback - must be last)
+register_static_routes(app)
+
+# Exception handlers
+app.add_exception_handler(AppError, app_exception_handler)
 
 
 def main():
