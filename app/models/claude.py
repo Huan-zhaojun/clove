@@ -1,5 +1,5 @@
 from typing import Optional, List, Union, Literal, Dict, Any
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from enum import Enum
 
 
@@ -140,6 +140,21 @@ class Tool(BaseModel):
     description: Optional[str] = None
 
 
+class OutputConfig(BaseModel):
+    """Output configuration for effort parameter (effort-2025-11-24 beta)."""
+
+    model_config = ConfigDict(extra="ignore")
+    effort: Optional[Literal["low", "medium", "high"]] = None
+
+
+class OutputFormat(BaseModel):
+    """Output format for structured outputs (structured-outputs-2025-11-13 beta)."""
+
+    model_config = ConfigDict(extra="allow", populate_by_name=True, serialize_by_alias=True)
+    type: Literal["json_schema"]
+    schema_: Optional[Dict[str, Any]] = Field(default=None, alias="schema")
+
+
 class ServerToolUsage(BaseModel):
     model_config = ConfigDict(extra="allow")
     web_search_requests: Optional[int] = None
@@ -169,6 +184,20 @@ class MessagesAPIRequest(BaseModel):
     thinking: Optional[ThinkingOptions] = None
     tool_choice: Optional[ToolChoice] = None
     tools: Optional[List[Tool]] = None
+    output_config: Optional[OutputConfig] = None
+    output_format: Optional[OutputFormat] = None
+
+    @model_validator(mode="after")
+    def validate_thinking_tokens(self) -> "MessagesAPIRequest":
+        """Ensure max_tokens > thinking.budget_tokens when thinking is enabled."""
+        if (
+            self.thinking
+            and self.thinking.type == "enabled"
+            and self.thinking.budget_tokens is not None
+            and self.max_tokens <= self.thinking.budget_tokens
+        ):
+            self.max_tokens = self.thinking.budget_tokens + 1
+        return self
 
 
 class Message(BaseModel):
