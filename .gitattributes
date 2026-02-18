@@ -1,0 +1,5 @@
+# 行尾符：统一 LF
+* text=auto eol=lf
+
+# 锁文件：禁止 diff/merge 冲突
+uv.lock -diff -merge
