@@ -215,3 +215,8 @@ app/static/
 
 # Claude Code
 .claude/settings.local.json
+
+tmp/
+temp/
+.ace-tool/
+.playwright-mcp/
