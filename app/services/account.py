@@ -1,12 +1,14 @@
 import asyncio
+import json
+import os
+import tempfile
+import threading
+import uuid
+from collections import defaultdict
 from datetime import datetime, UTC
 from typing import List, Optional, Dict, Set
 
-from collections import defaultdict
 from loguru import logger
-import threading
-import json
-import uuid
 
 from app.core.config import settings
 from app.core.exceptions import NoAccountsAvailableError
@@ -42,6 +44,8 @@ class AccountManager:
         self._account_task: Optional[asyncio.Task] = None
         self._max_sessions_per_account = settings.max_sessions_per_cookie
         self._account_task_interval = settings.account_task_interval
+        # 异步写操作锁，保护账户增删改的并发安全
+        self._write_lock = asyncio.Lock()
 
         logger.info("AccountManager initialized")
 
@@ -124,8 +128,9 @@ class AccountManager:
 
         return account
 
-    async def remove_account(self, organization_uuid: str) -> None:
-        """Remove an account from the manager."""
+    # 仅从内存中移除账户，不持久化到磁盘
+    def _remove_account_from_memory(self, organization_uuid: str) -> None:
+        """Remove an account from memory only, without saving to disk."""
         if organization_uuid in self._accounts:
             account = self._accounts[organization_uuid]
             sessions_to_remove = list(
@@ -144,7 +149,13 @@ class AccountManager:
             if organization_uuid in self._account_sessions:
                 del self._account_sessions[organization_uuid]
 
-            logger.info(f"Removed account: {organization_uuid[:8]}...")
+            logger.info(f"Removed account from memory: {organization_uuid[:8]}...")
+
+    # 移除账户并持久化（保持原有单删行为）
+    async def remove_account(self, organization_uuid: str) -> None:
+        """Remove an account from the manager and persist to disk."""
+        async with self._write_lock:
+            self._remove_account_from_memory(organization_uuid)
             self.save_accounts()
 
     async def get_account_for_session(
@@ -278,18 +289,18 @@ class AccountManager:
             Account instance if found and valid, None otherwise
         """
         account = self._accounts.get(account_id)
-        
+
         if account and account.status == AccountStatus.VALID:
             logger.debug(f"Retrieved account by ID: {account_id[:8]}...")
             return account
-        
+
         if account:
             logger.debug(
                 f"Account {account_id[:8]}... found but not valid: status={account.status}"
             )
         else:
             logger.debug(f"Account {account_id[:8]}... not found")
-        
+
         return None
 
     async def release_session(self, session_id: str) -> None:
@@ -441,12 +452,9 @@ class AccountManager:
 
         return status
 
+    # 保存所有账户到 JSON 文件（原子写入：临时文件 + os.replace）
     def save_accounts(self) -> None:
-        """Save all accounts to JSON file.
-
-        Args:
-            data_folder: Optional data folder path. If not provided, uses settings.data_folder
-        """
+        """Save all accounts to JSON file using atomic write."""
         if settings.no_filesystem_mode:
             logger.debug("No-filesystem mode enabled, skipping account save to disk")
             return
@@ -460,8 +468,16 @@ class AccountManager:
             for organization_uuid, account in self._accounts.items()
         }
 
-        with open(accounts_file, "w", encoding="utf-8") as f:
-            json.dump(accounts_data, f, indent=2)
+        # 原子写入：先写临时文件，再替换正式文件
+        fd, tmp_path = tempfile.mkstemp(dir=settings.data_folder, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(accounts_data, f, indent=2)
+            os.replace(tmp_path, str(accounts_file))
+        except Exception:
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+            raise
 
         logger.info(f"Saved {len(accounts_data)} accounts to {accounts_file}")
 
