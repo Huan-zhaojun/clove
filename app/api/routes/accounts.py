@@ -55,6 +55,21 @@ class AccountResponse(BaseModel):
     resets_at: Optional[str] = None
 
 
+class BatchDeleteRequest(BaseModel):
+    organization_uuids: List[str]
+
+
+class BatchDeleteFailure(BaseModel):
+    organization_uuid: str
+    error: str
+
+
+class BatchDeleteResult(BaseModel):
+    success_count: int
+    failure_count: int
+    failures: List[BatchDeleteFailure]
+
+
 router = APIRouter()
 
 
@@ -82,6 +97,13 @@ async def list_accounts(_: AdminAuthDep):
         )
 
     return accounts
+
+
+@router.post("/batch/delete", response_model=BatchDeleteResult)
+async def batch_delete_accounts(request: BatchDeleteRequest, _: AdminAuthDep):
+    """批量删除账户"""
+    result = await account_manager.batch_remove_accounts(request.organization_uuids)
+    return BatchDeleteResult(**result)
 
 
 @router.get("/{organization_uuid}", response_model=AccountResponse)

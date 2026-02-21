@@ -158,6 +158,40 @@ class AccountManager:
             self._remove_account_from_memory(organization_uuid)
             self.save_accounts()
 
+    # 批量移除账户并单次持久化
+    async def batch_remove_accounts(self, organization_uuids: List[str]) -> Dict:
+        """Batch remove accounts and persist once. Returns success/failure stats."""
+        async with self._write_lock:
+            success_count = 0
+            failures: List[Dict] = []
+
+            for org_uuid in organization_uuids:
+                if org_uuid not in self._accounts:
+                    failures.append(
+                        {"organization_uuid": org_uuid, "error": "Account not found"}
+                    )
+                    continue
+                try:
+                    self._remove_account_from_memory(org_uuid)
+                    success_count += 1
+                except Exception as e:
+                    failures.append(
+                        {"organization_uuid": org_uuid, "error": str(e)}
+                    )
+
+            if success_count > 0:
+                self.save_accounts()
+
+            logger.info(
+                f"Batch remove: {success_count} succeeded, {len(failures)} failed"
+            )
+
+            return {
+                "success_count": success_count,
+                "failure_count": len(failures),
+                "failures": failures,
+            }
+
     async def get_account_for_session(
         self,
         session_id: str,
