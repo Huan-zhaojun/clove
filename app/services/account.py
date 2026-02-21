@@ -49,6 +49,7 @@ class AccountManager:
 
         logger.info("AccountManager initialized")
 
+    # 添加账户（DCL 双重检查锁：慢 I/O 在锁外并行，快操作在锁内串行）
     async def add_account(
         self,
         cookie_value: Optional[str] = None,
@@ -57,6 +58,9 @@ class AccountManager:
         capabilities: Optional[List[str]] = None,
     ) -> Account:
         """Add a new account to the manager.
+
+        Uses double-checked locking to allow concurrent get_organization_info()
+        calls while serializing fast dict mutations and disk writes.
 
         Args:
             cookie_value: The cookie value (optional)
@@ -70,9 +74,12 @@ class AccountManager:
         if not cookie_value and not oauth_token:
             raise ValueError("Either cookie_value or oauth_token must be provided")
 
-        if cookie_value and cookie_value in self._cookie_to_uuid:
-            return self._accounts[self._cookie_to_uuid[cookie_value]]
+        # Phase 1 (锁内，快): 检查 cookie 是否已存在，已存在则直接返回
+        async with self._write_lock:
+            if cookie_value and cookie_value in self._cookie_to_uuid:
+                return self._accounts[self._cookie_to_uuid[cookie_value]]
 
+        # Phase 2 (锁外，慢): 获取 org UUID，多个不同 cookie 可并行执行
         if cookie_value and (not organization_uuid or not capabilities):
             (
                 fetched_uuid,
@@ -81,40 +88,47 @@ class AccountManager:
             if fetched_uuid:
                 organization_uuid = fetched_uuid
 
-        if organization_uuid and organization_uuid in self._accounts:
-            existing_account = self._accounts[organization_uuid]
+        # Phase 3 (锁内，快): 二次检查 + 创建 + 持久化
+        async with self._write_lock:
+            # 二次检查 cookie 去重（其他并发请求可能已添加同一 cookie）
+            if cookie_value and cookie_value in self._cookie_to_uuid:
+                return self._accounts[self._cookie_to_uuid[cookie_value]]
 
-            if cookie_value and existing_account.cookie_value != cookie_value:
-                if existing_account.cookie_value:
-                    del self._cookie_to_uuid[existing_account.cookie_value]
-                existing_account.cookie_value = cookie_value
+            # 二次检查 org UUID 去重（更新已有账户的 cookie）
+            if organization_uuid and organization_uuid in self._accounts:
+                existing_account = self._accounts[organization_uuid]
+
+                if cookie_value and existing_account.cookie_value != cookie_value:
+                    if existing_account.cookie_value:
+                        del self._cookie_to_uuid[existing_account.cookie_value]
+                    existing_account.cookie_value = cookie_value
+                    self._cookie_to_uuid[cookie_value] = organization_uuid
+                return existing_account
+
+            if not organization_uuid:
+                organization_uuid = str(uuid.uuid4())
+                logger.info(f"Generated new organization UUID: {organization_uuid}")
+
+            # 创建新账户
+            if cookie_value and oauth_token:
+                auth_type = AuthType.BOTH
+            elif cookie_value:
+                auth_type = AuthType.COOKIE_ONLY
+            else:
+                auth_type = AuthType.OAUTH_ONLY
+
+            account = Account(
+                organization_uuid=organization_uuid,
+                capabilities=capabilities,
+                cookie_value=cookie_value,
+                oauth_token=oauth_token,
+                auth_type=auth_type,
+            )
+            self._accounts[organization_uuid] = account
+            self.save_accounts()
+
+            if cookie_value:
                 self._cookie_to_uuid[cookie_value] = organization_uuid
-            return existing_account
-
-        if not organization_uuid:
-            organization_uuid = str(uuid.uuid4())
-            logger.info(f"Generated new organization UUID: {organization_uuid}")
-
-        # Create new account
-        if cookie_value and oauth_token:
-            auth_type = AuthType.BOTH
-        elif cookie_value:
-            auth_type = AuthType.COOKIE_ONLY
-        else:
-            auth_type = AuthType.OAUTH_ONLY
-
-        account = Account(
-            organization_uuid=organization_uuid,
-            capabilities=capabilities,
-            cookie_value=cookie_value,
-            oauth_token=oauth_token,
-            auth_type=auth_type,
-        )
-        self._accounts[organization_uuid] = account
-        self.save_accounts()
-
-        if cookie_value:
-            self._cookie_to_uuid[cookie_value] = organization_uuid
 
         logger.info(
             f"Added new account: {organization_uuid[:8]}... "
@@ -123,6 +137,7 @@ class AccountManager:
             f"oauth: {'Yes' if oauth_token else 'No'})"
         )
 
+        # 锁外: 启动后台 OAuth 认证任务
         if auth_type == AuthType.COOKIE_ONLY:
             asyncio.create_task(self._attempt_oauth_authentication(account))
 
