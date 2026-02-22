@@ -169,3 +169,20 @@ cp -r dist/* ../app/static/
 - **Pydantic 模型**：请求/响应验证在 `app/models/`
 - **Loguru 日志**：使用 `from loguru import logger`
 - **Context 模式**：`ClaudeAIContext` 在管道中传递请求状态
+
+# 文档索引
+
+## 功能文档
+
+| 文档 | 说明 |
+|------|------|
+| `docs/proxy-settings.md` | 代理模式、轮换策略、健康管理 |
+| `docs/account-management-enhance.md` | 多账户搜索/筛选/排序/分页/批量操作 |
+
+## 问题排查与经验
+
+| 文档 | 说明 |
+|------|------|
+| `docs/overloaded-error-analysis.md` | 503 Overloaded 根因分析与优化方案 |
+| `docs/hatch-build-issue.md` | Hatch 构建 force-include 问题 |
+| `docs/rnet-version-issue.md` | rnet 代理用法与 3.x 升级记录 |
