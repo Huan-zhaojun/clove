@@ -70,6 +70,26 @@ class BatchDeleteResult(BaseModel):
     failures: List[BatchDeleteFailure]
 
 
+class AccountRefreshResult(BaseModel):
+    organization_uuid: str
+    previous_status: str
+    new_status: str
+    auth_type: str
+    capabilities: Optional[List[str]] = None
+    error: Optional[str] = None
+
+
+class BatchRefreshRequest(BaseModel):
+    organization_uuids: List[str]
+    concurrency: int = Field(default=5, ge=1, le=20)
+
+
+class BatchRefreshResult(BaseModel):
+    success_count: int
+    failure_count: int
+    results: List[AccountRefreshResult]
+
+
 router = APIRouter()
 
 
@@ -99,11 +119,38 @@ async def list_accounts(_: AdminAuthDep):
     return accounts
 
 
+@router.post("/batch/refresh", response_model=BatchRefreshResult)
+async def batch_refresh_accounts(request: BatchRefreshRequest, _: AdminAuthDep):
+    """批量刷新账户状态"""
+    result = await account_manager.batch_refresh_accounts(
+        request.organization_uuids, request.concurrency
+    )
+    return BatchRefreshResult(
+        success_count=result["success_count"],
+        failure_count=result["failure_count"],
+        results=[AccountRefreshResult(**r) for r in result["results"]],
+    )
+
+
 @router.post("/batch/delete", response_model=BatchDeleteResult)
 async def batch_delete_accounts(request: BatchDeleteRequest, _: AdminAuthDep):
     """批量删除账户"""
     result = await account_manager.batch_remove_accounts(request.organization_uuids)
     return BatchDeleteResult(**result)
+
+
+@router.post("/{organization_uuid}/refresh", response_model=AccountRefreshResult)
+async def refresh_account(organization_uuid: str, _: AdminAuthDep):
+    """刷新单个账户状态"""
+    if organization_uuid not in account_manager._accounts:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    result = await account_manager.refresh_account_status(organization_uuid)
+
+    if result.get("error"):
+        raise HTTPException(status_code=500, detail=result["error"])
+
+    return AccountRefreshResult(**result)
 
 
 @router.get("/{organization_uuid}", response_model=AccountResponse)

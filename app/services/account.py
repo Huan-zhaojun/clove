@@ -6,12 +6,16 @@ import threading
 import uuid
 from collections import defaultdict
 from datetime import datetime, UTC
-from typing import List, Optional, Dict, Set
+from typing import List, Optional, Dict, Set, Tuple
 
 from loguru import logger
 
 from app.core.config import settings
-from app.core.exceptions import NoAccountsAvailableError
+from app.core.exceptions import (
+    NoAccountsAvailableError,
+    ClaudeAuthenticationError,
+    ClaudeRateLimitedError,
+)
 from app.core.account import Account, AccountStatus, AuthType, OAuthToken
 from app.services.oauth import oauth_authenticator
 
@@ -190,9 +194,7 @@ class AccountManager:
                     self._remove_account_from_memory(org_uuid)
                     success_count += 1
                 except Exception as e:
-                    failures.append(
-                        {"organization_uuid": org_uuid, "error": str(e)}
-                    )
+                    failures.append({"organization_uuid": org_uuid, "error": str(e)})
 
             if success_count > 0:
                 self.save_accounts()
@@ -500,6 +502,249 @@ class AccountManager:
             status["accounts"].append(account_info)
 
         return status
+
+    # 最小聊天测试，探测限流是否已解除
+    async def _probe_rate_limit(
+        self, account: Account
+    ) -> Tuple[str, Optional[datetime]]:
+        """Probe whether a rate-limited account has recovered.
+
+        Returns: ('valid', None) | ('rate_limited', resets_at) | ('error', None)
+        """
+        from app.services.proxy import proxy_service
+
+        has_oauth = account.auth_type in (AuthType.OAUTH_ONLY, AuthType.BOTH)
+
+        if has_oauth and account.oauth_token:
+            # OAuth 路径：直接 POST /v1/messages（最小请求）
+            from app.core.http_client import create_session
+
+            proxy_url = await proxy_service.get_proxy(
+                account_id=account.organization_uuid
+            )
+            session = create_session(
+                timeout=30,
+                impersonate="chrome",
+                proxy=proxy_url,
+            )
+            try:
+                api_base = settings.claude_api_baseurl.encoded_string().rstrip("/")
+                url = f"{api_base}/v1/messages"
+                headers = {
+                    "Authorization": f"Bearer {account.oauth_token.access_token}",
+                    "anthropic-beta": "oauth-2025-04-20",
+                    "anthropic-version": "2023-06-01",
+                    "Content-Type": "application/json",
+                }
+                payload = {
+                    "model": "claude-sonnet-4-20250514",
+                    "max_tokens": 1,
+                    "messages": [{"role": "user", "content": "hi"}],
+                }
+
+                response = await session.request(
+                    "POST", url, headers=headers, json=payload
+                )
+
+                if response.status_code == 200:
+                    return ("valid", None)
+
+                if response.status_code == 429:
+                    # 从 header 提取官方重置时间
+                    reset_header = response.headers.get(
+                        "anthropic-ratelimit-unified-reset"
+                    )
+                    resets_at = None
+                    if reset_header:
+                        try:
+                            resets_at = datetime.fromisoformat(
+                                reset_header.replace("Z", "+00:00")
+                            )
+                        except (ValueError, TypeError):
+                            pass
+                    return ("rate_limited", resets_at)
+
+                return ("error", None)
+            except Exception as e:
+                logger.warning(
+                    f"OAuth probe failed for {account.organization_uuid[:8]}...: {e}"
+                )
+                return ("error", None)
+            finally:
+                await session.close()
+        else:
+            # Cookie-only 路径：使用 ClaudeWebClient
+            from app.core.external.claude_client import ClaudeWebClient
+
+            client = ClaudeWebClient(account)
+            conv_uuid = None
+            try:
+                await client.initialize()
+                conv_uuid, _ = await client.create_conversation()
+                # 发送最小消息
+                payload = {
+                    "prompt": "hi",
+                    "timezone": "UTC",
+                    "attachments": [],
+                }
+                await client.send_message(payload, conv_uuid)
+                return ("valid", None)
+            except ClaudeRateLimitedError as e:
+                return ("rate_limited", e.resets_at)
+            except Exception as e:
+                logger.warning(
+                    f"Cookie probe failed for {account.organization_uuid[:8]}...: {e}"
+                )
+                return ("error", None)
+            finally:
+                if conv_uuid:
+                    try:
+                        await client.delete_conversation(conv_uuid)
+                    except Exception:
+                        pass
+                await client.cleanup()
+
+    # 刷新单个账户状态
+    async def refresh_account_status(self, organization_uuid: str) -> Dict:
+        """Refresh a single account's status by validating credentials and probing rate limits.
+
+        Returns a dict with refresh result details.
+        """
+        account = self._accounts.get(organization_uuid)
+        if not account:
+            return {
+                "organization_uuid": organization_uuid,
+                "previous_status": "unknown",
+                "new_status": "unknown",
+                "auth_type": "unknown",
+                "error": "Account not found",
+            }
+
+        previous_status = account.status.value
+        cookie_valid: Optional[bool] = None  # True / False / None(不确定)
+        new_capabilities: Optional[list] = None
+
+        # Phase 1 (锁外): Cookie 验证
+        if account.cookie_value:
+            try:
+                _, capabilities = await oauth_authenticator.get_organization_info(
+                    account.cookie_value
+                )
+                cookie_valid = True
+                new_capabilities = capabilities
+            except ClaudeAuthenticationError:
+                cookie_valid = False
+            except Exception as e:
+                # 网络/代理等非认证错误，不误判
+                logger.warning(
+                    f"Cookie validation inconclusive for {organization_uuid[:8]}...: {e}"
+                )
+                cookie_valid = None
+
+        # 锁外: OAuth 刷新（如有 OAuth token）
+        if (
+            account.auth_type in (AuthType.OAUTH_ONLY, AuthType.BOTH)
+            and account.oauth_token
+            and account.oauth_token.refresh_token
+        ):
+            try:
+                await oauth_authenticator.refresh_account_token(account)
+            except Exception as e:
+                logger.warning(
+                    f"OAuth refresh failed for {organization_uuid[:8]}...: {e}"
+                )
+
+        # Phase 2 (锁外): 限流探测（仅 RATE_LIMITED + Cookie 有效时）
+        probe_result: Optional[str] = None
+        probe_resets_at: Optional[datetime] = None
+        if account.status == AccountStatus.RATE_LIMITED and cookie_valid is True:
+            probe_result, probe_resets_at = await self._probe_rate_limit(account)
+
+        # 锁内: 状态更新
+        async with self._write_lock:
+            if account.status == AccountStatus.RATE_LIMITED:
+                # RATE_LIMITED 账户的状态转换
+                if cookie_valid is False:
+                    account.status = AccountStatus.INVALID
+                    account.resets_at = None
+                elif cookie_valid is True:
+                    if new_capabilities:
+                        account.capabilities = new_capabilities
+                    if probe_result == "valid":
+                        account.status = AccountStatus.VALID
+                        account.resets_at = None
+                    elif probe_result == "rate_limited":
+                        if probe_resets_at is not None:
+                            account.resets_at = probe_resets_at
+                        # 无官方重置时间则保留已有 resets_at
+                    # probe_result == 'error' 或 None: 不变
+
+            elif account.status == AccountStatus.INVALID:
+                # INVALID 账户的状态转换
+                if cookie_valid is True:
+                    account.status = AccountStatus.VALID
+                    account.resets_at = None
+                    if new_capabilities:
+                        account.capabilities = new_capabilities
+                # cookie_valid False 或 None: 不变
+
+            elif account.status == AccountStatus.VALID:
+                # VALID 账户的状态转换
+                if cookie_valid is False:
+                    account.status = AccountStatus.INVALID
+                elif cookie_valid is True and new_capabilities:
+                    account.capabilities = new_capabilities
+                # cookie_valid None: 不变
+
+            self.save_accounts()
+
+        new_status = account.status.value
+        logger.info(
+            f"Refreshed account {organization_uuid[:8]}...: "
+            f"{previous_status} -> {new_status}"
+        )
+
+        return {
+            "organization_uuid": organization_uuid,
+            "previous_status": previous_status,
+            "new_status": new_status,
+            "auth_type": account.auth_type.value,
+            "capabilities": account.capabilities,
+        }
+
+    # 批量刷新账户状态（并发执行）
+    async def batch_refresh_accounts(
+        self, organization_uuids: List[str], concurrency: int = 5
+    ) -> Dict:
+        """Batch refresh account statuses with controlled concurrency."""
+        sem = asyncio.Semaphore(min(concurrency, 20))
+
+        async def _refresh_one(org_uuid: str) -> Dict:
+            async with sem:
+                try:
+                    return await self.refresh_account_status(org_uuid)
+                except Exception as e:
+                    logger.error(f"Unexpected error refreshing {org_uuid[:8]}...: {e}")
+                    return {
+                        "organization_uuid": org_uuid,
+                        "previous_status": "unknown",
+                        "new_status": "unknown",
+                        "auth_type": "unknown",
+                        "error": str(e),
+                    }
+
+        results = await asyncio.gather(
+            *[_refresh_one(uid) for uid in organization_uuids]
+        )
+
+        success_count = sum(1 for r in results if not r.get("error"))
+        failure_count = sum(1 for r in results if r.get("error"))
+
+        return {
+            "success_count": success_count,
+            "failure_count": failure_count,
+            "results": list(results),
+        }
 
     # 保存所有账户到 JSON 文件（原子写入：临时文件 + os.replace）
     def save_accounts(self) -> None:
