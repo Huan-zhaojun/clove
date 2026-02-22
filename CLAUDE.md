@@ -117,10 +117,15 @@ pyproject.toml ──uv lock──> uv.lock ──uv sync──> .venv/
 | `oauth_authenticator` | `app/services/oauth.py` | OAuth 流程处理 |
 | `proxy_service` | `app/services/proxy.py` | 动态代理池管理（轮换、健康检查） |
 
+> 多账户管理增强（搜索/筛选/排序/分页/批量操作/状态刷新）详见 `docs/account-management-enhance.md`
+
 ## API 路由
 
 - `/v1/messages` - Claude API 兼容端点
 - `/api/admin/accounts` - 账户管理
+- `/api/admin/accounts/batch/refresh` - 批量刷新账户状态
+- `/api/admin/accounts/batch/delete` - 批量删除账户
+- `/api/admin/accounts/{uuid}/refresh` - 单账户状态刷新
 - `/api/admin/settings` - 配置管理
 - `/api/admin/proxies` - 代理列表管理
 - `/api/admin/statistics` - 使用统计
