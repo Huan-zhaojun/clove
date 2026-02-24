@@ -100,8 +100,7 @@ class ClaudeWebProcessor(BaseProcessor):
             paprika_mode = (
                 "extended"
                 if (
-                    context.claude_session.account.is_pro
-                    and request.thinking
+                    request.thinking
                     and request.thinking.type in ("enabled", "adaptive")
                 )
                 else None
