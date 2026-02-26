@@ -9,13 +9,46 @@ from app.processors.base import BaseProcessor
 from app.processors.claude_ai import ClaudeAIContext
 from app.services.session import session_manager
 from app.models.internal import ClaudeWebRequest, Attachment
+from app.models.claude import Tool
 from app.core.exceptions import NoValidMessagesError
 from app.core.config import settings
 from app.utils.messages import process_messages
 
+# Claude.ai Web 端的搜索 Tool（与官方 API 的 web_search_20250305 不同）
+WEB_SEARCH_V0_TOOL = {"type": "web_search_v0", "name": "web_search"}
+# 识别客户端发送的 Web Search Server Tool 类型前缀（web_search_20250305, web_search_20260209 等）
+WEB_SEARCH_TOOL_PREFIX = "web_search_"
+
 
 class ClaudeWebProcessor(BaseProcessor):
     """Claude AI processor that handles session management, request building, and sending to Claude AI."""
+
+    @staticmethod
+    def _process_web_search_tools(tools: list) -> tuple[bool, list]:
+        """检测并替换 web search server tool 为 Claude.ai web 格式。
+
+        客户端发送的 API 格式（如 web_search_20250305）需要替换为
+        Claude.ai web 端格式（web_search_v0）才能在 completion 请求中生效。
+        """
+        has_web_search = False
+        filtered_tools = []
+        for tool in tools:
+            tool_type = getattr(tool, "type", None)
+            if (
+                tool_type
+                and isinstance(tool_type, str)
+                and tool_type.startswith(WEB_SEARCH_TOOL_PREFIX)
+            ):
+                has_web_search = True
+            else:
+                filtered_tools.append(tool)
+
+        if has_web_search:
+            # 注入 Claude.ai web 格式的搜索工具
+            web_search_tool = Tool(name="web_search", type="web_search_v0")
+            filtered_tools.insert(0, web_search_tool)
+
+        return has_web_search, filtered_tools
 
     async def process(self, context: ClaudeAIContext) -> ClaudeAIContext:
         """
@@ -108,6 +141,14 @@ class ClaudeWebProcessor(BaseProcessor):
 
             await context.claude_session.set_paprika_mode(paprika_mode)
 
+            # 检测 Web Search Tool，替换为 Claude.ai web 格式，并设置对话级搜索开关
+            request_tools = request.tools or []
+            has_web_search, processed_tools = self._process_web_search_tools(
+                request_tools
+            )
+            if has_web_search:
+                await context.claude_session.set_web_search(True)
+
             web_request = ClaudeWebRequest(
                 max_tokens_to_sample=request.max_tokens,
                 attachments=[Attachment.from_text(merged_text)],
@@ -116,7 +157,7 @@ class ClaudeWebProcessor(BaseProcessor):
                 rendering_mode="messages",
                 prompt=settings.custom_prompt or "",
                 timezone="UTC",
-                tools=request.tools or [],
+                tools=processed_tools,
             )
 
             context.claude_web_request = web_request

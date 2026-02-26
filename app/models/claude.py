@@ -48,10 +48,20 @@ class CacheControl(BaseModel):
 
 
 # Content types
+class TextCitation(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    type: str
+    cited_text: Optional[str] = None
+    title: Optional[str] = None
+    url: Optional[str] = None
+    encrypted_index: Optional[str] = None
+
+
 class TextContent(BaseModel):
     model_config = ConfigDict(extra="allow")
     type: Literal["text"]
     text: str
+    citations: Optional[List[TextCitation]] = None
     cache_control: Optional[CacheControl] = None
 
 
@@ -66,6 +76,8 @@ class ThinkingContent(BaseModel):
     model_config = ConfigDict(extra="allow")
     type: Literal["thinking"]
     thinking: str
+    # Anthropic thinking 块在部分客户端校验中要求包含 signature 字段
+    signature: Optional[str] = None
 
 
 # redacted_thinking 块：API 可能返回被审查的思考内容
@@ -141,10 +153,11 @@ class ToolChoice(BaseModel):
     disable_parallel_tool_use: Optional[bool] = None
 
 
+# 工具定义（支持用户自定义工具和 Server Tool 如 web_search）
 class Tool(BaseModel):
     model_config = ConfigDict(extra="allow")
     name: str
-    input_schema: Any
+    input_schema: Optional[Any] = None  # Server Tool（如 web_search）无此字段，改为可选
     description: Optional[str] = None
 
 
@@ -158,7 +171,9 @@ class OutputConfig(BaseModel):
 class OutputFormat(BaseModel):
     """Output format for structured outputs (deprecated, use output_config.format instead)."""
 
-    model_config = ConfigDict(extra="allow", populate_by_name=True, serialize_by_alias=True)
+    model_config = ConfigDict(
+        extra="allow", populate_by_name=True, serialize_by_alias=True
+    )
     type: Literal["json_schema"]
     schema_: Optional[Dict[str, Any]] = Field(default=None, alias="schema")
 

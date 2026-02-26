@@ -178,6 +178,8 @@ cp -r dist/* ../app/static/
 |------|------|
 | `docs/proxy-settings.md` | 代理模式、轮换策略、健康管理 |
 | `docs/account-management-enhance.md` | 多账户搜索/筛选/排序/分页/批量操作 |
+| `docs/web-search-analysis.md` | 网络搜索机制分析、双链路实现方案 |
+| `docs/anthropic-standard-streaming-notes.md` | 流式输出标准化策略、事件映射矩阵、引用标准化 |
 
 ## 问题排查与经验
 

@@ -10,7 +10,8 @@ class EventParsingProcessor(BaseProcessor):
 
     def __init__(self):
         super().__init__()
-        self.parser = EventParser()
+        # 默认严格遵循 Anthropic 标准事件：未建模事件直接跳过，避免下游客户端类型校验失败
+        self.parser = EventParser(skip_unknown_events=True)
 
     async def process(self, context: ClaudeAIContext) -> ClaudeAIContext:
         """

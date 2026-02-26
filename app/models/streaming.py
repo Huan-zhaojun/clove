@@ -1,7 +1,7 @@
 from typing import Optional, Union, Dict, Any, Literal
 from pydantic import BaseModel, RootModel, ConfigDict
 
-from .claude import ContentBlock, Message, Usage
+from .claude import ContentBlock, Message, Usage, TextCitation
 
 
 # Base event types
@@ -35,7 +35,19 @@ class SignatureDelta(BaseModel):
     signature: str
 
 
-Delta = Union[TextDelta, InputJsonDelta, ThinkingDelta, SignatureDelta]
+class CitationsDelta(BaseModel):
+    model_config = ConfigDict(extra="allow")
+    type: Literal["citations_delta"]
+    citation: TextCitation
+
+
+Delta = Union[
+    TextDelta,
+    InputJsonDelta,
+    ThinkingDelta,
+    SignatureDelta,
+    CitationsDelta,
+]
 
 
 class MessageDeltaData(BaseModel):

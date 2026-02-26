@@ -18,6 +18,8 @@ from app.models.streaming import (
     TextDelta,
     InputJsonDelta,
     ThinkingDelta,
+    SignatureDelta,
+    CitationsDelta,
 )
 from app.models.claude import (
     ContentBlock,
@@ -81,6 +83,10 @@ class MessageCollectorProcessor(BaseProcessor):
                     context.collected_message.content[event.root.index] = (
                         event.root.content_block.model_copy(deep=True)
                     )
+                    # 非流模式需输出 Anthropic 标准 thinking.signature
+                    block = context.collected_message.content[event.root.index]
+                    if isinstance(block, ThinkingContent) and not block.signature:
+                        block.signature = ""
                     logger.debug(
                         f"Content block {event.root.index} started: {event.root.content_block.type}"
                     )
@@ -107,10 +113,13 @@ class MessageCollectorProcessor(BaseProcessor):
                             del block.input_json
                     if isinstance(block, ToolResultContent):
                         if hasattr(block, "content_json") and block.content_json:
-                            block = ToolResultContent(
-                                **block.model_dump(exclude={"content"}),
-                                content=json5.loads(block.content_json),
-                            )
+                            # web_search 的 tool_result 可能包含 knowledge 等非 text/image 项，直接保留原始结构
+                            try:
+                                block.content = json5.loads(block.content_json)
+                            except Exception as e:
+                                logger.warning(
+                                    f"Failed to parse tool result content_json: {e}"
+                                )
                             del block.content_json
                             context.collected_message.content[event.root.index] = block
                     logger.debug(f"Content block {event.root.index} stopped")
@@ -150,6 +159,10 @@ class MessageCollectorProcessor(BaseProcessor):
 
             elif isinstance(event.root, MessageStopEvent):
                 if context.collected_message:
+                    # 兜底补齐 thinking.signature，避免下游 Anthropic 客户端校验失败
+                    for block in context.collected_message.content:
+                        if isinstance(block, ThinkingContent) and not block.signature:
+                            block.signature = ""
                     context.collected_message.content = [
                         block
                         for block in context.collected_message.content
@@ -166,8 +179,12 @@ class MessageCollectorProcessor(BaseProcessor):
             yield event
 
         if context.collected_message:
+            # 避免对包含非常规 tool_result 内容（如 knowledge 列表）的消息做深度序列化时产生噪音告警
             logger.debug(
-                f"Collected message:\n{context.collected_message.model_dump()}"
+                "Collected message summary: "
+                f"id={context.collected_message.id}, "
+                f"content_blocks={len(context.collected_message.content)}, "
+                f"stop_reason={context.collected_message.stop_reason}"
             )
 
     def _apply_delta(self, content_block: ContentBlock, delta: Delta) -> None:
@@ -178,6 +195,9 @@ class MessageCollectorProcessor(BaseProcessor):
         elif isinstance(delta, ThinkingDelta):
             if isinstance(content_block, ThinkingContent):
                 content_block.thinking += delta.thinking
+        elif isinstance(delta, SignatureDelta):
+            if isinstance(content_block, ThinkingContent):
+                content_block.signature = delta.signature
         elif isinstance(delta, InputJsonDelta):
             if isinstance(content_block, (ToolUseContent, ServerToolUseContent)):
                 if hasattr(content_block, "input_json"):
@@ -189,3 +209,8 @@ class MessageCollectorProcessor(BaseProcessor):
                     content_block.content_json += delta.partial_json
                 else:
                     content_block.content_json = delta.partial_json
+        elif isinstance(delta, CitationsDelta):
+            if isinstance(content_block, TextContent):
+                if content_block.citations is None:
+                    content_block.citations = []
+                content_block.citations.append(delta.citation.model_copy(deep=True))

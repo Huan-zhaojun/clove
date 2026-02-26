@@ -14,6 +14,7 @@ class ClaudeWebSession:
         self.last_activity = datetime.now()
         self.conv_uuid: Optional[str] = None
         self.paprika_mode: Optional[str] = None
+        self.web_search_enabled: Optional[bool] = None  # 网络搜索开关状态
         self.sse_stream: Optional[AsyncIterator[str]] = None
 
     async def initialize(self):
@@ -103,3 +104,14 @@ class ClaudeWebSession:
 
         await self.client.set_paprika_mode(self.conv_uuid, mode)
         self.paprika_mode = mode
+
+    # 设置网络搜索开关
+    async def set_web_search(self, enabled: bool) -> None:
+        """Set the web search setting for the conversation."""
+        await self._ensure_conversation_initialized()
+
+        if self.web_search_enabled == enabled:
+            return
+
+        await self.client.set_web_search(self.conv_uuid, enabled)
+        self.web_search_enabled = enabled

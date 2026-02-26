@@ -99,8 +99,7 @@ class ClaudeWebClient:
                 # Mark proxy as unhealthy and wrap as retryable AppError
                 if self._proxy_url:
                     await proxy_service.mark_unhealthy(
-                        self._proxy_url,
-                        reason=f"connection error: {type(e).__name__}"
+                        self._proxy_url, reason=f"connection error: {type(e).__name__}"
                     )
                 raise ProxyConnectionError(
                     proxy_url=self._proxy_url,
@@ -191,6 +190,17 @@ class ClaudeWebClient:
         payload = {"settings": {"paprika_mode": mode}}
         await self._request("PUT", url, json=payload)
         logger.debug(f"Set conversation {conv_uuid} mode: {mode}")
+
+    # 设置对话的网络搜索开关
+    async def set_web_search(self, conv_uuid: str, enabled: bool) -> None:
+        """Set the web search setting for a conversation."""
+        url = urljoin(
+            self.endpoint,
+            f"/api/organizations/{self.account.organization_uuid}/chat_conversations/{conv_uuid}",
+        )
+        payload = {"settings": {"enabled_web_search": enabled}}
+        await self._request("PUT", url, json=payload)
+        logger.debug(f"Set conversation {conv_uuid} web search: {enabled}")
 
     async def upload_file(
         self, file_data: bytes, filename: str, content_type: str

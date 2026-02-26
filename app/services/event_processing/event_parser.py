@@ -1,5 +1,5 @@
 import json
-from typing import AsyncIterator, Optional
+from typing import Any, AsyncIterator, Optional
 from dataclasses import dataclass
 from loguru import logger
 
@@ -105,14 +105,18 @@ class EventParser:
             logger.debug(f"Raw data: {sse_msg.data}")
             return None
 
+        data = self._normalize_private_event(data)
+        if data is None:
+            return None
+
         try:
             streaming_event = StreamingEvent(root=data)
         except ValidationError:
             if self.skip_unknown_events:
                 logger.debug(f"Skipping unknown event: {sse_msg.event}")
                 return None
-            logger.warning(
-                "Failed to validate streaming event. Falling back to UnknownEvent."
+            logger.debug(
+                f"Unknown/unmodeled streaming event '{sse_msg.event}', falling back to UnknownEvent."
             )
             logger.debug(f"Event data: {data}")
             streaming_event = StreamingEvent(
@@ -120,6 +124,60 @@ class EventParser:
             )
 
         return streaming_event
+
+    def _normalize_private_event(self, data: Any) -> Optional[dict[str, Any]]:
+        """将 Claude Web 私有事件规范化为 Anthropic 兼容事件。"""
+        if not isinstance(data, dict):
+            return None
+
+        if data.get("type") != "content_block_delta":
+            return data
+
+        delta = data.get("delta")
+        if not isinstance(delta, dict):
+            return data
+
+        delta_type = delta.get("type")
+        if delta_type != "citation_start_delta":
+            return data
+
+        citation = self._convert_private_citation(delta.get("citation"))
+        if not citation:
+            return None
+
+        normalized = data.copy()
+        normalized["delta"] = {"type": "citations_delta", "citation": citation}
+        return normalized
+
+    def _convert_private_citation(self, raw: Any) -> Optional[dict[str, Any]]:
+        """
+        将 Claude Web 私有 citation 结构转换为 Anthropic web_search_result_location。
+
+        私有 payload（citation_start_delta）不包含 Anthropic 全字段，
+        这里合成一个最小可用结构以保留来源链接。
+        """
+        if not isinstance(raw, dict):
+            return None
+
+        url = raw.get("url")
+        if not isinstance(url, str) or not url:
+            return None
+
+        title = raw.get("title") if isinstance(raw.get("title"), str) else None
+        encrypted_index = (
+            raw.get("uuid")
+            if isinstance(raw.get("uuid"), str) and raw.get("uuid")
+            else url
+        )
+        cited_text = title or ""
+
+        return {
+            "type": "web_search_result_location",
+            "cited_text": cited_text,
+            "encrypted_index": encrypted_index,
+            "title": title,
+            "url": url,
+        }
 
     async def flush(self) -> AsyncIterator[StreamingEvent]:
         """

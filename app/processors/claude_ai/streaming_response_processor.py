@@ -12,7 +12,8 @@ class StreamingResponseProcessor(BaseProcessor):
 
     def __init__(self):
         super().__init__()
-        self.serializer = EventSerializer()
+        # 与 EventParsingProcessor 保持一致：默认只输出标准 Anthropic 事件
+        self.serializer = EventSerializer(skip_unknown_events=True)
 
     async def process(self, context: ClaudeAIContext) -> ClaudeAIContext:
         """
