@@ -95,9 +95,19 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      - name: Cache Trivy DB
+        if: github.event_name != 'pull_request'
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/trivy
+          key: trivy-db-${{ github.run_id }}
+          restore-keys: trivy-db-
+
       - name: Run security scan
         if: github.event_name != 'pull_request'
         uses: aquasecurity/trivy-action@master
+        env:
+          TRIVY_DB_REPOSITORY: "public.ecr.aws/aquasecurity/trivy-db:2,ghcr.io/aquasecurity/trivy-db:2"
         with:
           image-ref: ${{ env.REGISTRY }}/${{ steps.lower.outputs.image_name }}:${{ steps.meta.outputs.version }}
           format: "sarif"
