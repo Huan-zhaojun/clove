@@ -170,6 +170,33 @@ cp -r dist/* ../app/static/
 - **Loguru 日志**：使用 `from loguru import logger`
 - **Context 模式**：`ClaudeAIContext` 在管道中传递请求状态
 
+# 合并上游（upstream）注意事项
+
+本项目是二开 Fork，既向上游贡献 PR，也有独有的定制开发。
+
+## 已知风险
+
+PR 被上游合并后，同一份改动在本地和上游各存一份（SHA 不同），Git 自动合并可能将两份都保留，导致类/函数重复定义。
+
+## 手动合并与检查流程
+
+```bash
+git fetch upstream
+git merge --no-commit upstream/main    # 不自动提交，先检查
+# 解决冲突（如有）
+git diff --cached                       # 审查暂存区变更，检查是否有重复定义
+git commit                              # 确认无误后提交
+```
+
+## 合并后检查要点
+
+无论使用何种方式合并上游（命令行、PyCharm、rebase），合并完成后都需要检查：
+
+1. **重复代码**：Grep 检查是否有重复的 class/function 定义
+2. **定制代码完整性**：确认本项目独有的定制代码未被上游版本覆盖
+
+可以手动检查，也可以合并后让 Claude 执行自动检查。
+
 # 文档索引
 
 ## 功能文档
