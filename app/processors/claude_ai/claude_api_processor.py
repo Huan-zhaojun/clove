@@ -9,7 +9,7 @@ from typing import Dict, Optional
 from loguru import logger
 from fastapi.responses import StreamingResponse
 
-from app.models.claude import MessagesAPIRequest, TextContent
+from app.models.claude import MessagesAPIRequest
 from app.processors.base import BaseProcessor
 from app.processors.claude_ai import ClaudeAIContext
 from app.services.account import account_manager
@@ -66,8 +66,6 @@ class ClaudeAPIProcessor(BaseProcessor):
                 "Skipping ClaudeAPIProcessor due to missing messages_api_request"
             )
             return context
-
-        self._insert_system_message(context)
 
         try:
             # First try to get account from cache service
@@ -232,30 +230,6 @@ class ClaudeAPIProcessor(BaseProcessor):
             logger.debug("No accounts available for Claude API, continuing pipeline")
 
         return context
-
-    def _insert_system_message(self, context: ClaudeAIContext) -> None:
-        """Insert system message into the request."""
-
-        request = context.messages_api_request
-
-        # Handle system field
-        system_message_text = (
-            "You are Claude Code, Anthropic's official CLI for Claude."
-        )
-        system_message = TextContent(type="text", text=system_message_text)
-
-        if isinstance(request.system, str) and request.system:
-            request.system = [
-                system_message,
-                TextContent(type="text", text=request.system),
-            ]
-        elif isinstance(request.system, list) and request.system:
-            if request.system[0].text == system_message_text:
-                logger.debug("System message already exists, skipping injection.")
-            else:
-                request.system = [system_message] + request.system
-        else:
-            request.system = [system_message]
 
     def _prepare_headers(
         self,
