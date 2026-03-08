@@ -97,7 +97,7 @@ class ClaudeWebProcessor(BaseProcessor):
             merged_text, images = await process_messages(
                 request.messages, request.system
             )
-            if not merged_text:
+            if not merged_text and not images:
                 raise NoValidMessagesError()
 
             if settings.padtxt_length > 0:
@@ -151,7 +151,7 @@ class ClaudeWebProcessor(BaseProcessor):
 
             web_request = ClaudeWebRequest(
                 max_tokens_to_sample=request.max_tokens,
-                attachments=[Attachment.from_text(merged_text)],
+                attachments=[Attachment.from_text(merged_text)] if merged_text else [],
                 files=image_file_ids,
                 model=request.model,
                 rendering_mode="messages",
