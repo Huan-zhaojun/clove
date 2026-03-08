@@ -161,7 +161,7 @@ class ClaudeWebClient:
                 retryable=error_type != "invalid_request_error",
             )
 
-    async def create_conversation(self) -> str:
+    async def create_conversation(self) -> tuple[str, Optional[str]]:
         """Create a new conversation."""
         url = urljoin(
             self.endpoint,
@@ -204,17 +204,48 @@ class ClaudeWebClient:
         await self._request("PUT", url, json=payload)
         logger.debug(f"Set conversation {conv_uuid} web search: {enabled}")
 
-    async def upload_file(
+    async def upload_file_to_conversation(
+        self,
+        file_data: bytes,
+        filename: str,
+        content_type: str,
+        conv_uuid: str,
+    ) -> str:
+        """Upload a file to a conversation and return file UUID."""
+        url = urljoin(
+            self.endpoint,
+            "/api/organizations/"
+            f"{self.account.organization_uuid}/conversations/{conv_uuid}/wiggle/upload-file",
+        )
+        files = {"file": (filename, file_data, content_type)}
+
+        response = await self._request(
+            "POST",
+            url,
+            conv_uuid=conv_uuid,
+            files=files,
+            headers={"Accept": "application/json"},
+        )
+
+        data = UploadResponse.model_validate(await response.json())
+        return data.resolved_file_uuid
+
+    async def _upload_file_legacy(
         self, file_data: bytes, filename: str, content_type: str
     ) -> str:
-        """Upload a file and return file UUID."""
+        """Upload a file through the legacy organization endpoint."""
         url = urljoin(self.endpoint, f"/api/{self.account.organization_uuid}/upload")
         files = {"file": (filename, file_data, content_type)}
 
-        response = await self._request("POST", url, files=files)
+        response = await self._request(
+            "POST",
+            url,
+            files=files,
+            headers={"Accept": "application/json"},
+        )
 
         data = UploadResponse.model_validate(await response.json())
-        return data.file_uuid
+        return data.resolved_file_uuid
 
     async def send_message(self, payload: Dict[str, Any], conv_uuid: str) -> Response:
         """Send a message and return the response."""

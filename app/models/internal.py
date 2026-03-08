@@ -32,4 +32,14 @@ class ClaudeWebRequest(BaseModel):
 
 
 class UploadResponse(BaseModel):
-    file_uuid: str
+    file_uuid: Optional[str] = None
+    uuid: Optional[str] = None
+
+    @property
+    def resolved_file_uuid(self) -> str:
+        """Return the effective file UUID from either response shape."""
+        if self.file_uuid:
+            return self.file_uuid
+        if self.uuid:
+            return self.uuid
+        raise ValueError("Upload response did not contain a file UUID")

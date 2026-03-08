@@ -118,6 +118,9 @@ class ClaudeWebProcessor(BaseProcessor):
             # Step 3: Upload files and build request
             image_file_ids: List[str] = []
             if images:
+                # 新上传端点是对话级接口，上传前必须先拿到 conv_uuid。
+                await context.claude_session._ensure_conversation_initialized()
+
                 for i, image_source in enumerate(images):
                     try:
                         # Convert base64 to bytes
@@ -132,9 +135,12 @@ class ClaudeWebProcessor(BaseProcessor):
                         image_file_ids.append(file_id)
                         logger.debug(f"Uploaded image {i}: {file_id}")
                     except Exception as e:
+                        # 图片上传采用全有或全无策略，避免继续发送一个缺图的请求。
+                        # 否则纯图片消息会触发空 prompt，图文消息也会静默退化成纯文字。
                         logger.error(f"Failed to upload image {i}: {e}")
+                        raise
 
-            await context.claude_session._ensure_conversation_initialized()
+            # 无图片时，后续设置对话模式或发送消息仍会按需初始化会话。
 
             paprika_mode = (
                 "extended"

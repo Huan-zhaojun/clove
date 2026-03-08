@@ -83,8 +83,18 @@ class ClaudeWebSession:
     async def upload_file(
         self, file_data: bytes, filename: str, content_type: str
     ) -> str:
-        """Upload a file and return file UUID."""
-        return await self.client.upload_file(file_data, filename, content_type)
+        """Upload a file to the active conversation and return file UUID."""
+        if not self.conv_uuid:
+            raise ValueError(
+                "Session must have an active conversation to upload files"
+            )
+
+        return await self.client.upload_file_to_conversation(
+            file_data,
+            filename,
+            content_type,
+            self.conv_uuid,
+        )
 
     async def send_tool_result(self, payload: Dict[str, Any]) -> None:
         """Send tool result to Claude.ai."""
